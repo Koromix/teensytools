@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="tyupdater">tyupdater.png</file>
+        <file alias="logo">tyupdater_logo.png</file>
+    </qresource>
+</RCC>
