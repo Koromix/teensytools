@@ -1,34 +1,37 @@
-/*
- * ty, a collection of GUI and command-line tools to manage Teensy devices
- *
- * Distributed under the MIT license (see LICENSE.txt or http://opensource.org/licenses/MIT)
- * Copyright (c) 2015 Niels Martignène <niels.martignene@gmail.com>
- */
+/* TyTools - public domain
+   Niels Martignène <niels.martignene@protonmail.com>
+   https://koromix.dev/tytools
 
-#include "util.h"
+   This software is in the public domain. Where that dedication is not
+   recognized, you are granted a perpetual, irrevocable license to copy,
+   distribute, and modify this file as you see fit.
+
+   See the LICENSE file for more details. */
+
+#include "common_priv.h"
+#ifdef _WIN32
+    // Need that for InterlockedX functions
+    #include <windows.h>
+#endif
 #include <stdarg.h>
-#include "hs/common.h"
-#include "ty/system.h"
+#include "../libhs/common.h"
+#include "system.h"
 #include "version.h"
-#include "task_priv.h"
-
-struct ty_task {
-    TY_TASK
-};
+#include "task.h"
 
 int ty_config_verbosity = TY_LOG_INFO;
 
-static ty_message_func *handler = ty_message_default_handler;
-static void *handler_udata = NULL;
+static ty_message_func *message_handler = ty_message_default_handler;
+static void *message_handler_udata = NULL;
 
-static TY_THREAD_LOCAL ty_err mask[16];
-static TY_THREAD_LOCAL unsigned int mask_count;
+static TY_THREAD_LOCAL ty_err error_masks[16];
+static TY_THREAD_LOCAL unsigned int error_masks_count;
 
 static TY_THREAD_LOCAL char last_error_msg[512];
 
 const char *ty_version_string(void)
 {
-    return TY_CONFIG_VERSION;
+    return TY_VERSION;
 }
 
 static bool log_level_is_enabled(ty_log_level level)
@@ -36,7 +39,7 @@ static bool log_level_is_enabled(ty_log_level level)
     static bool init, debug;
 
     if (!init) {
-        debug = getenv("TY_DEBUG");
+        debug = getenv("TYTOOLS_DEBUG");
         init = true;
     }
 
@@ -68,7 +71,7 @@ static void print_progress(const ty_message_data *msg)
         return;
 
     if (!init) {
-        show_progress = ty_standard_get_modes(TY_STANDARD_OUTPUT) & TY_DESCRIPTOR_MODE_TERMINAL;
+        show_progress = ty_standard_get_modes(TY_STREAM_OUTPUT) & TY_DESCRIPTOR_MODE_TERMINAL;
         init = true;
     }
 
@@ -92,14 +95,14 @@ void ty_message_default_handler(const ty_message_data *msg, void *udata)
     TY_UNUSED(udata);
 
     switch (msg->type) {
-    case TY_MESSAGE_LOG:
-        print_log(msg);
-        break;
-    case TY_MESSAGE_PROGRESS:
-        print_progress(msg);
-        break;
-    case TY_MESSAGE_STATUS:
-        break;
+        case TY_MESSAGE_LOG: {
+            print_log(msg);
+        } break;
+        case TY_MESSAGE_PROGRESS: {
+            print_progress(msg);
+        } break;
+        case TY_MESSAGE_STATUS: {
+        } break;
     }
 }
 
@@ -108,8 +111,8 @@ void ty_message_redirect(ty_message_func *f, void *udata)
     assert(f);
     assert(f != ty_message_default_handler || !udata);
 
-    handler = f;
-    handler_udata = udata;
+    message_handler = f;
+    message_handler_udata = udata;
 }
 
 void ty_log(ty_log_level level, const char *fmt, ...)
@@ -137,37 +140,21 @@ static const char *generic_error(int err)
         return "Success";
 
     switch ((ty_err)err) {
-    case TY_ERROR_MEMORY:
-        return "Memory error";
-    case TY_ERROR_PARAM:
-        return "Incorrect parameter";
-    case TY_ERROR_UNSUPPORTED:
-        return "Option not supported";
-    case TY_ERROR_NOT_FOUND:
-        return "Not found";
-    case TY_ERROR_EXISTS:
-        return "Already exists";
-    case TY_ERROR_ACCESS:
-        return "Permission error";
-    case TY_ERROR_BUSY:
-        return "Busy error";
-    case TY_ERROR_IO:
-        return "I/O error";
-    case TY_ERROR_TIMEOUT:
-        return "Timeout error";
-    case TY_ERROR_MODE:
-        return "Wrong mode";
-    case TY_ERROR_RANGE:
-        return "Out of range error";
-    case TY_ERROR_SYSTEM:
-        return "System error";
-    case TY_ERROR_PARSE:
-        return "Parse error";
-    case TY_ERROR_FIRMWARE:
-        return "Firmware error";
+        case TY_ERROR_MEMORY: { return "Memory error"; } break;
+        case TY_ERROR_PARAM: { return "Incorrect parameter"; } break;
+        case TY_ERROR_UNSUPPORTED: { return "Option not supported"; } break;
+        case TY_ERROR_NOT_FOUND: { return "Not found"; } break;
+        case TY_ERROR_EXISTS: { return "Already exists"; } break;
+        case TY_ERROR_ACCESS: { return "Permission error"; } break;
+        case TY_ERROR_BUSY: { return "Busy error"; } break;
+        case TY_ERROR_IO: { return "I/O error"; } break;
+        case TY_ERROR_TIMEOUT: { return "Timeout error"; } break;
+        case TY_ERROR_MODE: { return "Wrong mode"; } break;
+        case TY_ERROR_RANGE: { return "Out of range error"; } break;
+        case TY_ERROR_SYSTEM: { return "System error"; } break;
+        case TY_ERROR_PARSE: { return "Parse error"; } break;
 
-    case TY_ERROR_OTHER:
-        break;
+        case TY_ERROR_OTHER: {} break;
     }
 
     return "Unknown error";
@@ -175,16 +162,16 @@ static const char *generic_error(int err)
 
 void ty_error_mask(ty_err err)
 {
-    assert(mask_count < TY_COUNTOF(mask));
+    assert(error_masks_count < TY_COUNTOF(error_masks));
 
-    mask[mask_count++] = err;
+    error_masks[error_masks_count++] = err;
 }
 
 void ty_error_unmask(void)
 {
-    assert(mask_count);
+    assert(error_masks_count);
 
-    mask_count--;
+    error_masks_count--;
 }
 
 bool ty_error_is_masked(int err)
@@ -192,8 +179,8 @@ bool ty_error_is_masked(int err)
     if (err >= 0)
         return false;
 
-    for (unsigned int i = 0; i < mask_count; i++) {
-        if (mask[i] == err)
+    for (unsigned int i = 0; i < error_masks_count; i++) {
+        if (error_masks[i] == err)
             return true;
     }
 
@@ -254,15 +241,15 @@ void ty_message(ty_message_data *msg)
 {
     ty_task *task = msg->task;
     if (!task) {
-        task = _ty_task_get_current();
+        task = ty_task_get_current();
         msg->task = task;
     }
     if (!msg->ctx && task)
-        msg->ctx = ty_task_get_name(task);
+        msg->ctx = task->name;
 
-    (*handler)(msg, handler_udata);
-    if (task && task->callback)
-        (*task->callback)(msg, task->callback_udata);
+    (*message_handler)(msg, message_handler_udata);
+    if (task && task->user_callback)
+        (*task->user_callback)(msg, task->user_callback_udata);
 }
 
 int ty_libhs_translate_error(int err)
@@ -271,16 +258,12 @@ int ty_libhs_translate_error(int err)
         return err;
 
     switch ((hs_error_code)err) {
-    case HS_ERROR_MEMORY:
-        return TY_ERROR_MEMORY;
-    case HS_ERROR_NOT_FOUND:
-        return TY_ERROR_NOT_FOUND;
-    case HS_ERROR_ACCESS:
-        return TY_ERROR_ACCESS;
-    case HS_ERROR_IO:
-        return TY_ERROR_IO;
-    case HS_ERROR_SYSTEM:
-        return TY_ERROR_SYSTEM;
+        case HS_ERROR_MEMORY: { return TY_ERROR_MEMORY; } break;
+        case HS_ERROR_NOT_FOUND: { return TY_ERROR_NOT_FOUND; } break;
+        case HS_ERROR_ACCESS: { return TY_ERROR_ACCESS; } break;
+        case HS_ERROR_IO: { return TY_ERROR_IO; } break;
+        case HS_ERROR_PARSE: { return TY_ERROR_PARSE; } break;
+        case HS_ERROR_SYSTEM: { return TY_ERROR_SYSTEM; } break;
     }
 
     assert(false);
@@ -295,20 +278,16 @@ void ty_libhs_log_handler(hs_log_level level, int err, const char *log, void *ud
 
     msg.type = TY_MESSAGE_LOG;
     switch (level) {
-    case HS_LOG_DEBUG:
-        msg.u.log.level = TY_LOG_DEBUG;
-        break;
-    case HS_LOG_WARNING:
-        msg.u.log.level = TY_LOG_WARNING;
-        break;
-    case HS_LOG_ERROR:
-        msg.u.log.level = TY_LOG_ERROR;
-        msg.u.log.err = ty_libhs_translate_error(err);
-        strncpy(last_error_msg, log, sizeof(last_error_msg));
-        last_error_msg[sizeof(last_error_msg) - 1] = 0;
-        if (ty_error_is_masked(msg.u.log.err))
-            return;
-        break;
+        case HS_LOG_DEBUG: { msg.u.log.level = TY_LOG_DEBUG; } break;
+        case HS_LOG_WARNING: { msg.u.log.level = TY_LOG_WARNING; } break;
+        case HS_LOG_ERROR: {
+            msg.u.log.level = TY_LOG_ERROR;
+            msg.u.log.err = ty_libhs_translate_error(err);
+            strncpy(last_error_msg, log, sizeof(last_error_msg));
+            last_error_msg[sizeof(last_error_msg) - 1] = 0;
+            if (ty_error_is_masked(msg.u.log.err))
+                return;
+        } break;
     }
     msg.u.log.msg = log;
 

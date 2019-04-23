@@ -1,17 +1,20 @@
-/*
- * ty, a collection of GUI and command-line tools to manage Teensy devices
- *
- * Distributed under the MIT license (see LICENSE.txt or http://opensource.org/licenses/MIT)
- * Copyright (c) 2015 Niels Martignène <niels.martignene@gmail.com>
- */
+/* TyTools - public domain
+   Niels Martignène <niels.martignene@protonmail.com>
+   https://koromix.dev/tytools
 
-#include "util.h"
+   This software is in the public domain. Where that dedication is not
+   recognized, you are granted a perpetual, irrevocable license to copy,
+   distribute, and modify this file as you see fit.
+
+   See the LICENSE file for more details. */
+
+#include "common_priv.h"
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <direct.h>
 #include <io.h>
 #include <shlobj.h>
-#include "ty/system.h"
+#include "system.h"
 
 typedef ULONGLONG WINAPI GetTickCount64_func(void);
 
@@ -55,10 +58,10 @@ static ULONGLONG WINAPI GetTickCount64_fallback(void)
 
     if (!freq.QuadPart) {
         success = QueryPerformanceFrequency(&freq);
-        assert(!success);
+        assert(success);
     }
     success = QueryPerformanceCounter(&now);
-    assert(!success);
+    assert(success);
 
     return (ULONGLONG)now.QuadPart * 1000 / (ULONGLONG)freq.QuadPart;
 }
@@ -101,34 +104,91 @@ unsigned int ty_descriptor_get_modes(ty_descriptor desc)
 {
     DWORD tmp;
     switch (GetFileType(desc)) {
-    case FILE_TYPE_PIPE:
-        return TY_DESCRIPTOR_MODE_FIFO;
-    case FILE_TYPE_CHAR:
-        if (GetConsoleMode(desc, &tmp)) {
-            return TY_DESCRIPTOR_MODE_DEVICE | TY_DESCRIPTOR_MODE_TERMINAL;
-        } else {
-            return TY_DESCRIPTOR_MODE_DEVICE;
-        }
-    case FILE_TYPE_DISK:
-        return TY_DESCRIPTOR_MODE_FILE;
+        case FILE_TYPE_PIPE: {
+            return TY_DESCRIPTOR_MODE_FIFO;
+        } break;
+        case FILE_TYPE_CHAR: {
+            if (GetConsoleMode(desc, &tmp)) {
+                return TY_DESCRIPTOR_MODE_DEVICE | TY_DESCRIPTOR_MODE_TERMINAL;
+            } else {
+                return TY_DESCRIPTOR_MODE_DEVICE;
+            }
+        } break;
+        case FILE_TYPE_DISK: {
+            return TY_DESCRIPTOR_MODE_FILE;
+        } break;
     }
 
     return 0;
 }
 
-ty_descriptor ty_standard_get_descriptor(ty_standard_stream std)
+ty_descriptor ty_standard_get_descriptor(ty_standard_stream std_stream)
 {
-    switch (std) {
-    case TY_STANDARD_INPUT:
-        return GetStdHandle(STD_INPUT_HANDLE);
-    case TY_STANDARD_OUTPUT:
-        return GetStdHandle(STD_OUTPUT_HANDLE);
-    case TY_STANDARD_ERROR:
-        return GetStdHandle(STD_ERROR_HANDLE);
+    switch (std_stream) {
+        case TY_STREAM_INPUT: { return GetStdHandle(STD_INPUT_HANDLE); } break;
+        case TY_STREAM_OUTPUT: { return GetStdHandle(STD_OUTPUT_HANDLE); } break;
+        case TY_STREAM_ERROR: { return GetStdHandle(STD_ERROR_HANDLE); } break;
     }
 
     assert(false);
     return NULL;
+}
+
+unsigned int ty_standard_get_paths(ty_standard_path std_path, const char *suffix,
+                                   char (*rpaths)[TY_PATH_MAX_SIZE], unsigned int max_paths)
+{
+    assert(rpaths);
+
+    unsigned int paths_count = 0;
+
+    if (!max_paths)
+        return 0;
+
+#define ADD_SHELL_DIRECTORY(Id) \
+        do { \
+            if (paths_count < max_paths) { \
+                if (SHGetFolderPath(NULL, (Id), NULL, SHGFP_TYPE_CURRENT, \
+                                    rpaths[paths_count++]) != S_OK) \
+                    goto overflow; \
+            } \
+        } while (false)
+
+    switch (std_path) {
+        case TY_PATH_EXECUTABLE_DIRECTORY: {
+            DWORD len = GetModuleFileName(NULL, rpaths[0], TY_PATH_MAX_SIZE);
+            if (len == TY_PATH_MAX_SIZE)
+                goto overflow;
+            while (len && !strchr(TY_PATH_SEPARATORS, rpaths[0][--len]))
+                continue;
+            rpaths[0][len] = 0;
+            paths_count = 1;
+        } break;
+
+        case TY_PATH_CONFIG_DIRECTORY: {
+            ADD_SHELL_DIRECTORY(CSIDL_APPDATA);
+            ADD_SHELL_DIRECTORY(CSIDL_COMMON_APPDATA);
+        } break;
+    }
+
+#undef ADD_SHELL_DIRECTORY
+
+    if (suffix) {
+        for (unsigned int i = 0; i < paths_count; i++) {
+            size_t len, suffix_len;
+
+            len = strlen(rpaths[i]);
+            suffix_len = (size_t)snprintf(rpaths[i] + len, TY_PATH_MAX_SIZE - len, "/%s", suffix);
+            if (suffix_len >= TY_PATH_MAX_SIZE - len)
+                goto overflow;
+        }
+    }
+
+    assert(paths_count);
+    return paths_count;
+
+overflow:
+    ty_error(TY_ERROR_SYSTEM, "Ignoring truncated path in ty_standard_get_paths()");
+    return 0;
 }
 
 int ty_poll(const ty_descriptor_set *set, int timeout)
@@ -140,11 +200,13 @@ int ty_poll(const ty_descriptor_set *set, int timeout)
     DWORD ret = WaitForMultipleObjects((DWORD)set->count, set->desc, FALSE,
                                        timeout < 0 ? INFINITE : (DWORD)timeout);
     switch (ret) {
-    case WAIT_FAILED:
-        return ty_error(TY_ERROR_SYSTEM, "WaitForMultipleObjects() failed: %s",
-                        ty_win32_strerror(0));
-    case WAIT_TIMEOUT:
-        return 0;
+        case WAIT_FAILED: {
+            return ty_error(TY_ERROR_SYSTEM, "WaitForMultipleObjects() failed: %s",
+                            ty_win32_strerror(0));
+        } break;
+        case WAIT_TIMEOUT: {
+            return 0;
+        } break;
     }
 
     return set->id[ret - WAIT_OBJECT_0];

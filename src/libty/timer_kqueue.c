@@ -1,17 +1,20 @@
-/*
- * ty, a collection of GUI and command-line tools to manage Teensy devices
- *
- * Distributed under the MIT license (see LICENSE.txt or http://opensource.org/licenses/MIT)
- * Copyright (c) 2015 Niels Martignène <niels.martignene@gmail.com>
- */
+/* TyTools - public domain
+   Niels Martignène <niels.martignene@protonmail.com>
+   https://koromix.dev/tytools
 
-#include "util.h"
+   This software is in the public domain. Where that dedication is not
+   recognized, you are granted a perpetual, irrevocable license to copy,
+   distribute, and modify this file as you see fit.
+
+   See the LICENSE file for more details. */
+
+#include "common_priv.h"
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include "ty/timer.h"
-#include "ty/system.h"
+#include "timer.h"
+#include "system.h"
 
 struct ty_timer {
     int fd;
@@ -99,10 +102,8 @@ uint64_t ty_timer_rearm(ty_timer *timer)
         return 0;
 
     switch (kev.ident) {
-    case 0:
-        return (uint64_t)kev.data;
-    case 1:
-        return 1;
+        case 0: { return (uint64_t)kev.data; } break;
+        case 1: { return 1; } break;
     }
 
     assert(false);

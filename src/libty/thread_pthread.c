@@ -1,14 +1,17 @@
-/*
- * ty, a collection of GUI and command-line tools to manage Teensy devices
- *
- * Distributed under the MIT license (see LICENSE.txt or http://opensource.org/licenses/MIT)
- * Copyright (c) 2015 Niels Martignène <niels.martignene@gmail.com>
- */
+/* TyTools - public domain
+   Niels Martignène <niels.martignene@protonmail.com>
+   https://koromix.dev/tytools
 
-#include "util.h"
+   This software is in the public domain. Where that dedication is not
+   recognized, you are granted a perpetual, irrevocable license to copy,
+   distribute, and modify this file as you see fit.
+
+   See the LICENSE file for more details. */
+
+#include "common_priv.h"
 #include <time.h>
-#include "ty/system.h"
-#include "ty/thread.h"
+#include "system.h"
+#include "thread.h"
 
 static pthread_mutex_t thread_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t thread_cond = PTHREAD_COND_INITIALIZER;
@@ -42,7 +45,7 @@ int ty_thread_create(ty_thread *thread, ty_thread_func *f, void *udata)
     ctx.udata = udata;
 
     thread->init = false;
-    r = pthread_create(&thread->thread, NULL, thread_proc, &ctx);
+    r = pthread_create(&thread->thread_id, NULL, thread_proc, &ctx);
     if (r < 0)
         return ty_error(TY_ERROR_SYSTEM, "pthread_create() failed: %s", strerror(r));
 
@@ -61,7 +64,7 @@ int ty_thread_join(ty_thread *thread)
     void *retval;
     int r TY_POSSIBLY_UNUSED;
 
-    r = pthread_join(thread->thread, &retval);
+    r = pthread_join(thread->thread_id, &retval);
     assert(!r);
 
     thread->init = false;
@@ -74,34 +77,21 @@ void ty_thread_detach(ty_thread *thread)
     if (!thread->init)
         return;
 
-    pthread_detach(thread->thread);
+    pthread_detach(thread->thread_id);
     thread->init = false;
 }
 
-int ty_mutex_init(ty_mutex *mutex, ty_mutex_type type)
+ty_thread_id ty_thread_get_self_id(void)
 {
-    pthread_mutexattr_t attr;
-    int ptype, r;
+    return pthread_self();
+}
+
+int ty_mutex_init(ty_mutex *mutex)
+{
+    int r;
 
     mutex->init = false;
-
-    ptype = PTHREAD_MUTEX_NORMAL;
-    switch (type) {
-    case TY_MUTEX_FAST:
-        ptype = PTHREAD_MUTEX_NORMAL;
-        break;
-    case TY_MUTEX_RECURSIVE:
-        ptype = PTHREAD_MUTEX_RECURSIVE;
-        break;
-    }
-
-    r = pthread_mutexattr_init(&attr);
-    assert(!r);
-    r = pthread_mutexattr_settype(&attr, ptype);
-    assert(!r);
-
-    r = pthread_mutex_init(&mutex->mutex, &attr);
-    pthread_mutexattr_destroy(&attr);
+    r = pthread_mutex_init(&mutex->mutex, NULL);
     if (r)
         return ty_error(TY_ERROR_SYSTEM, "pthread_mutex_init() failed: %s", strerror(r));
     mutex->init = true;
@@ -130,14 +120,14 @@ void ty_mutex_unlock(ty_mutex *mutex)
 
 int ty_cond_init(ty_cond *cond)
 {
-#ifndef HAVE_PTHREAD_COND_TIMEDWAIT_RELATIVE_NP
+#ifndef _TY_HAVE_PTHREAD_COND_TIMEDWAIT_RELATIVE_NP
     pthread_condattr_t attr;
 #endif
     int r;
 
     cond->init = false;
 
-#ifdef HAVE_PTHREAD_COND_TIMEDWAIT_RELATIVE_NP
+#ifdef _TY_HAVE_PTHREAD_COND_TIMEDWAIT_RELATIVE_NP
     r = pthread_cond_init(&cond->cond, NULL);
 #else
     r = pthread_condattr_init(&attr);
@@ -179,7 +169,7 @@ bool ty_cond_wait(ty_cond *cond, ty_mutex *mutex, int timeout)
     int r;
 
     if (timeout >= 0) {
-#ifdef HAVE_PTHREAD_COND_TIMEDWAIT_RELATIVE_NP
+#ifdef _TY_HAVE_PTHREAD_COND_TIMEDWAIT_RELATIVE_NP
         struct timespec ts;
 
         ts.tv_sec = (time_t)(timeout / 1000);

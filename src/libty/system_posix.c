@@ -1,11 +1,14 @@
-/*
- * ty, a collection of GUI and command-line tools to manage Teensy devices
- *
- * Distributed under the MIT license (see LICENSE.txt or http://opensource.org/licenses/MIT)
- * Copyright (c) 2015 Niels Martignène <niels.martignene@gmail.com>
- */
+/* TyTools - public domain
+   Niels Martignène <niels.martignene@protonmail.com>
+   https://koromix.dev/tytools
 
-#include "util.h"
+   This software is in the public domain. Where that dedication is not
+   recognized, you are granted a perpetual, irrevocable license to copy,
+   distribute, and modify this file as you see fit.
+
+   See the LICENSE file for more details. */
+
+#include "common_priv.h"
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -15,11 +18,12 @@
 #include <termios.h>
 #ifdef __APPLE__
     #include <mach/mach_time.h>
+    #include <mach-o/dyld.h>
     #include <sys/select.h>
 #else
     #include <poll.h>
 #endif
-#include "ty/system.h"
+#include "system.h"
 
 struct child_report {
     ty_err err;
@@ -107,10 +111,157 @@ unsigned int ty_descriptor_get_modes(ty_descriptor desc)
     return 0;
 }
 
-ty_descriptor ty_standard_get_descriptor(ty_standard_stream std)
+ty_descriptor ty_standard_get_descriptor(ty_standard_stream std_stream)
 {
-    return std;
+    return std_stream;
 }
+
+#ifdef __APPLE__
+
+unsigned int ty_standard_get_paths(ty_standard_path std_path, const char *suffix,
+                                   char (*rpaths)[TY_PATH_MAX_SIZE], unsigned int max_paths)
+{
+    assert(rpaths);
+
+    unsigned int paths_count = 0;
+
+    if (!max_paths)
+        return 0;
+
+#define ADD_DIRECTORY(Fmt, ...) \
+        do { \
+            if (paths_count < max_paths) { \
+                if (snprintf(rpaths[paths_count++], TY_PATH_MAX_SIZE, \
+                             (Fmt), ## __VA_ARGS__) >= TY_PATH_MAX_SIZE) \
+                    goto overflow; \
+            } \
+        } while (false)
+
+    switch (std_path) {
+        case TY_PATH_EXECUTABLE_DIRECTORY: {
+            uint32_t tmp_size = TY_PATH_MAX_SIZE;
+            int r = _NSGetExecutablePath(rpaths[0], &tmp_size);
+            if (r == -1)
+                goto overflow;
+
+            size_t len = strlen(rpaths[0]);
+            while (len && !strchr(TY_PATH_SEPARATORS, rpaths[0][--len]))
+                continue;
+            rpaths[0][len] = 0;
+
+            paths_count = 1;
+        } break;
+
+        // FIXME: Use NSSearchPathForDirectoriesInDomains() to get proper paths
+        case TY_PATH_CONFIG_DIRECTORY: {
+            const char *home_dir = getenv("HOME");
+            if (home_dir)
+                ADD_DIRECTORY("%s/Library/Preferences", home_dir);
+            ADD_DIRECTORY("/Library/Preferences");
+        } break;
+    }
+
+#undef ADD_DIRECTORY
+
+    if (suffix) {
+        for (unsigned int i = 0; i < paths_count; i++) {
+            size_t len = strlen(rpaths[i]);
+            size_t suffix_len = (size_t)snprintf(rpaths[i] + len, TY_PATH_MAX_SIZE - len,
+                                                 "/%s", suffix);
+            if (suffix_len >= TY_PATH_MAX_SIZE - len)
+                goto overflow;
+        }
+    }
+
+    assert(paths_count);
+    return paths_count;
+
+overflow:
+    ty_error(TY_ERROR_SYSTEM, "Ignoring truncated path in ty_standard_get_paths()");
+    return 0;
+}
+
+#else
+
+unsigned int ty_standard_get_paths(ty_standard_path std_path, const char *suffix,
+                                   char (*rpaths)[TY_PATH_MAX_SIZE], unsigned int max_paths)
+{
+    assert(rpaths);
+
+    unsigned int paths_count = 0;
+
+    if (!max_paths)
+        return 0;
+
+#define ADD_DIRECTORY(Fmt, ...) \
+        do { \
+            if (paths_count < max_paths) { \
+                if (snprintf(rpaths[paths_count++], TY_PATH_MAX_SIZE, \
+                             (Fmt), ## __VA_ARGS__) >= TY_PATH_MAX_SIZE) \
+                    goto overflow; \
+            } \
+        } while (false)
+
+    switch (std_path) {
+        case TY_PATH_EXECUTABLE_DIRECTORY: {
+            ssize_t len = readlink("/proc/self/exe", rpaths[0], TY_PATH_MAX_SIZE);
+            if (len < 0) {
+                ty_error(TY_ERROR_SYSTEM, "readlink('/proc/self/exe') failed: %s", strerror(errno));
+                return 0;
+            }
+            if (len >= TY_PATH_MAX_SIZE)
+                goto overflow;
+
+            while (len && !strchr(TY_PATH_SEPARATORS, rpaths[0][--len]))
+                continue;
+            rpaths[0][len] = 0;
+
+            paths_count = 1;
+        } break;
+
+        case TY_PATH_CONFIG_DIRECTORY: {
+            const char *config_home_dir = getenv("XDG_CONFIG_HOME");
+            if (config_home_dir) {
+                ADD_DIRECTORY("%s", config_home_dir);
+            } else {
+                const char *home_dir = getenv("HOME");
+                if (home_dir)
+                    ADD_DIRECTORY("%s/.config", home_dir);
+            }
+
+            const char *config_dirs = getenv("XDG_CONFIG_DIRS");
+            if (!config_dirs)
+                config_dirs = "/etc/xdg";
+            while (config_dirs[0]) {
+                size_t len = strcspn(config_dirs, ":");
+                if (len)
+                    ADD_DIRECTORY("%.*s", (int)len, config_dirs);
+                config_dirs += len + !!config_dirs[len];
+            }
+        } break;
+    }
+
+#undef ADD_DIRECTORY
+
+    if (suffix) {
+        for (unsigned int i = 0; i < paths_count; i++) {
+            size_t len = strlen(rpaths[i]);
+            size_t suffix_len = (size_t)snprintf(rpaths[i] + len, TY_PATH_MAX_SIZE - len,
+                                                 "/%s", suffix);
+            if (suffix_len >= TY_PATH_MAX_SIZE - len)
+                goto overflow;
+        }
+    }
+
+    assert(paths_count);
+    return paths_count;
+
+overflow:
+    ty_error(TY_ERROR_SYSTEM, "Ignoring truncated path in ty_standard_get_paths()");
+    return 0;
+}
+
+#endif
 
 #ifdef __APPLE__
 
@@ -132,19 +283,17 @@ int ty_poll(const ty_descriptor_set *set, int timeout)
     start = ty_millis();
 restart:
     if (timeout >= 0) {
-        tv.tv_sec = timeout / 1000;
-        tv.tv_usec = (timeout % 1000) * 1000;
+        int adjusted_timeout = ty_adjust_timeout(timeout, start);
+        tv.tv_sec = adjusted_timeout / 1000;
+        tv.tv_usec = (adjusted_timeout % 1000) * 1000;
+        r = select(FD_SETSIZE, &fds, NULL, NULL, &tv);
+    } else {
+        r = select(FD_SETSIZE, &fds, NULL, NULL, NULL);
     }
-
-    r = select(FD_SETSIZE, &fds, NULL, NULL, timeout >= 0 ? &tv : NULL);
     if (r < 0) {
-        switch (errno) {
-        case EINTR:
-            timeout = ty_adjust_timeout(timeout, start);
+        if (errno == EINTR)
             goto restart;
-        case ENOMEM:
-            return ty_error(TY_ERROR_MEMORY, NULL);
-        }
+
         return ty_error(TY_ERROR_SYSTEM, "poll() failed: %s", strerror(errno));
     }
     if (!r)
@@ -183,12 +332,9 @@ int ty_poll(const ty_descriptor_set *set, int timeout)
 restart:
     r = poll(pfd, (nfds_t)set->count, ty_adjust_timeout(timeout, start));
     if (r < 0) {
-        switch (errno) {
-        case EINTR:
+        if (errno == EINTR)
             goto restart;
-        case ENOMEM:
-            return ty_error(TY_ERROR_MEMORY, NULL);
-        }
+
         return ty_error(TY_ERROR_SYSTEM, "poll() failed: %s", strerror(errno));
     }
     if (!r)
