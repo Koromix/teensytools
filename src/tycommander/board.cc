@@ -101,6 +101,7 @@ void Board::loadSettings(Monitor *monitor)
     serial_log_size_ = db_.get(
         "serialLogSize",
         static_cast<quint64>(monitor ? monitor->serialLogSize() : 0)).toULongLong();
+    serial_rate_ = db_.get("serialRate", 115200).toUInt();
 
     /* Even if the user decides to enable persistence for ambiguous identifiers,
        we still don't want to cache the board model. */
@@ -206,6 +207,16 @@ std::vector<BoardInterfaceInfo> Board::interfaces() const
     }, &vec);
 
     return vec;
+}
+
+bool Board::serialIsSerial() const
+{
+    if (serial_iface_) {
+        hs_device *dev = ty_board_interface_get_device(serial_iface_);
+        return dev->type == HS_DEVICE_TYPE_SERIAL;
+    } else {
+        return false;
+    }
 }
 
 void Board::updateStatus()
@@ -437,6 +448,22 @@ void Board::setResetAfter(bool reset_after)
     emit settingsChanged();
 }
 
+void Board::setSerialRate(unsigned int rate)
+{
+    if (rate == serial_rate_)
+        return;
+
+    serial_rate_ = rate;
+    if (serial_iface_) {
+        closeSerialInterface();
+        if (!openSerialInterface())
+            updateStatus();
+    }
+
+    db_.put("serialRate", rate);
+    emit settingsChanged();
+}
+
 void Board::setSerialCodecName(QString codec_name)
 {
     if (codec_name == serial_codec_name_)
@@ -652,6 +679,11 @@ void Board::appendBufferToSerialDocument()
     serial_buf_len_ = 0;
     locker.unlock();
 
+    // Hack to fix extra empty lines when CR and LF are put in separate buffers.
+    // That's something that will go away with VT-100 support.
+    if (str.endsWith('\r'))
+        str.resize(str.size() - 1);
+
     QTextCursor cursor(&serial_document_);
     cursor.movePosition(QTextCursor::End);
     cursor.insertText(str);
@@ -717,12 +749,13 @@ bool Board::openSerialInterface()
     ty_board_interface_get_descriptors(serial_iface_, &set, 1);
     serial_notifier_.setDescriptorSet(&set);
 
-    // TODO: Make serial settings (mainly speed) configurable in the GUI
     hs_device *dev = ty_board_interface_get_device(serial_iface_);
+    hs_port *port = ty_board_interface_get_handle(serial_iface_);
+
     if (dev->type == HS_DEVICE_TYPE_SERIAL) {
-        hs_port *port = ty_board_interface_get_handle(serial_iface_);
         hs_serial_config config = {};
-        config.baudrate = 115200;
+        config.baudrate = serial_rate_;
+
         hs_serial_set_config(port, &config);
     }
 
